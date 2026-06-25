@@ -5,12 +5,11 @@ const cors = require("cors");
 const axios = require("axios");
 const cron = require("node-cron");
 const pool = require("./config/db");
+const path = require("path");
 const aiController = require("./controllers/ai_controller");
 const authRoutes = require("./routes/authRoutes");
 
 const app = express();
-
-//tessss
 
 app.use(cors());
 app.use(express.json());
@@ -25,9 +24,9 @@ const mqttClient = mqtt.connect(process.env.MQTT_BROKER_URL, {
 });
 
 mqttClient.on("connect", () => {
-  console.log("✅ Terhubung ke HiveMQ Broker!");
+  console.log("Terhubung ke HiveMQ Broker!");
   mqttClient.subscribe(["devices/+/data", "devices/+/register"], (err) => {
-    if (err) console.error("❌ Gagal subscribe:", err);
+    if (err) console.error("Gagal subscribe:", err);
     else console.log("📡 Listening: Data & Register...");
   });
 });
@@ -40,7 +39,7 @@ mqttClient.on("message", async (topic, message) => {
 
     if (action === "register") {
       const info = JSON.parse(message.toString());
-      console.log(`🆕 [REGISTER] Sinyal dari ${deviceId}`);
+      console.log(`[REGISTER] Sinyal dari ${deviceId}`);
       const query = `
           INSERT INTO devices (device_id, device_name, type, whatsapp_number)
           VALUES ($1, $2, $3, $4)
@@ -63,7 +62,7 @@ mqttClient.on("message", async (topic, message) => {
       if (data.temperature === undefined || gasValue === undefined) return;
 
       console.log(
-        `📥 [DATA] ${deviceId}: Suhu=${data.temperature}, Gas=${gasValue}`,
+        `[DATA] ${deviceId}: Suhu=${data.temperature}, Gas=${gasValue}`,
       );
 
       const ensureDeviceQuery = `
@@ -88,9 +87,9 @@ mqttClient.on("message", async (topic, message) => {
       let alertMessage = "";
 
       if (Number(data.temperature) > Number(device.threshold_temp)) {
-        alertMessage = `⚠️ *PERINGATAN SUHU TINGGI!*\nLokasi: ${device.device_name}\nSuhu: ${data.temperature}°C`;
+        alertMessage = `*PERINGATAN SUHU TINGGI!*\nLokasi: ${device.device_name}\nSuhu: ${data.temperature}°C`;
       } else if (Number(gasValue) > Number(device.threshold_gas)) {
-        alertMessage = `⚠️ *PERINGATAN AMONIA TINGGI!*\nLokasi: ${device.device_name}\nGas: ${gasValue} PPM`;
+        alertMessage = `*PERINGATAN AMONIA TINGGI!*\nLokasi: ${device.device_name}\nGas: ${gasValue} PPM`;
       }
 
       if (
@@ -102,11 +101,22 @@ mqttClient.on("message", async (topic, message) => {
       }
     }
   } catch (err) {
-    console.error("❌ Error MQTT:", err);
+    console.error("Error MQTT:", err);
   }
 });
 
 // --- API ENDPOINTS ---
+// Mengizinkan perangkat mengunduh fail .bin dari folder firmware
+app.use("/firmware", express.static(path.join(__dirname, "firmware")));
+// Endpoint untuk mengecek versi firmware terbaru
+app.get("/api/firmware/check", (req, res) => {
+  res.json({
+    status: "success",
+    latest_version: "1.0.1", // Ubah angka ini setiap kali ada pembaruan
+    // Ganti [IP_VPS_ANDA] dengan alamat IP publik peladen
+    download_url: "http://[IP_VPS_ANDA]:3000/firmware/iopeka_latest.bin",
+  });
+});
 app.get("/", (req, res) => res.send("🚀 Backend Maggenzim Running!"));
 app.post("/api/chat", aiController.chatWithAssistant);
 app.use("/auth", authRoutes);
@@ -131,7 +141,7 @@ app.post("/api/login", async (req, res) => {
         .json({ status: "error", message: "Nomor belum terdaftar." });
     }
   } catch (err) {
-    console.error("❌ Login Error:", err);
+    console.error("Login Error:", err);
     res.status(500).json({ error: "Server Error" });
   }
 });
@@ -191,7 +201,7 @@ app.post("/api/claim-device", async (req, res) => {
       type: device.type,
     });
   } catch (err) {
-    console.error("❌ Claim Error:", err);
+    console.error("Claim Error:", err);
     res.status(500).json({ error: "Server Error" });
   }
 });
@@ -211,10 +221,10 @@ app.post("/api/release-device", async (req, res) => {
       });
     }
 
-    console.log(`🗑️ Device ${device_id} dilepas User ${user_id}`);
+    console.log(`Device ${device_id} dilepas User ${user_id}`);
     res.json({ status: "success", message: "Perangkat dihapus." });
   } catch (err) {
-    console.error("❌ Release Error:", err);
+    console.error("Release Error:", err);
     res.status(500).json({ error: "Server Error" });
   }
 });
@@ -255,7 +265,7 @@ app.get("/api/get-schedule", async (req, res) => {
       res.json({ status: "success", data: { times: [] } });
     }
   } catch (err) {
-    console.error("❌ Error Get Schedule:", err);
+    console.error("Error Get Schedule:", err);
     res.status(500).json({ error: "Server Error" });
   }
 });
@@ -281,7 +291,7 @@ app.post("/api/schedule", async (req, res) => {
 
     res.json({ status: "success" });
   } catch (err) {
-    console.error("❌ Schedule Error:", err);
+    console.error("Schedule Error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -341,12 +351,12 @@ async function sendWhatsApp(to, message) {
     );
 
     if (response.data.status) {
-      console.log(`✅ WA Alert ke ${to}: Terkirim`);
+      console.log(`WA Alert ke ${to}: Terkirim`);
     } else {
-      console.error(`❌ WA Alert ke ${to} Gagal:`, response.data.reason);
+      console.error(`WA Alert ke ${to} Gagal:`, response.data.reason);
     }
   } catch (err) {
-    console.error("❌ Fonnte Error:", err.message);
+    console.error("Fonnte Error:", err.message);
   }
 }
 
@@ -362,10 +372,10 @@ cron.schedule("0 0 * * *", async () => {
     const result = await pool.query(query);
 
     console.log(
-      `✅ [CRON] Selesai! Menghapus ${result.rowCount} baris data kadaluarsa.`,
+      `[CRON] Selesai! Menghapus ${result.rowCount} baris data kadaluarsa.`,
     );
   } catch (err) {
-    console.error("❌ [CRON] Gagal membersihkan data:", err.message);
+    console.error("[CRON] Gagal membersihkan data:", err.message);
   }
 });
 
