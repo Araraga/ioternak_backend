@@ -114,7 +114,7 @@ app.get("/api/firmware/check", (req, res) => {
     status: "success",
     latest_version: "1.0.1", // Ubah angka ini setiap kali ada pembaruan
     // Ganti [IP_VPS_ANDA] dengan alamat IP publik peladen
-    download_url: "http://[IP_VPS_ANDA]:3000/firmware/iopeka_latest.bin",
+    download_url: "http://38.103.170.74:3000/firmware/iopeka_latest.bin",
   });
 });
 app.get("/", (req, res) => res.send("🚀 Backend Maggenzim Running!"));
