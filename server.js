@@ -122,7 +122,7 @@ app.get("/api/firmware/check", (req, res) => {
   if (deviceType === "IoPeka") {
     res.json({
       status: "success",
-      latest_version: "1.0.1",
+      latest_version: "1.0.2",
       download_url: "http://38.103.170.74:3000/firmware/update_iopeka.bin",
     });
   } else {
