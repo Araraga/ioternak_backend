@@ -2,9 +2,12 @@ const axios = require("axios");
 const dotenv = require("dotenv");
 dotenv.config();
 
+/**
+ * Normalise phone number ke format internasional 62xxx (tanpa + atau spasi).
+ * Mendukung input: "0812...", "62812...", "+62812..."
+ */
 const formatPhoneNumber = (number) => {
   let formatted = number.toString().trim();
-
   formatted = formatted.replace(/\D/g, "");
 
   if (formatted.startsWith("0")) {
@@ -14,14 +17,17 @@ const formatPhoneNumber = (number) => {
   return formatted;
 };
 
-const sendWhatsappOTP = async (phone, otp) => {
+/**
+ * Kirim pesan WhatsApp via Fonnte.
+ * Dipakai untuk: OTP registrasi & alert sensor (suhu/gas tinggi).
+ *
+ * @param {string} phone   - Nomor tujuan (format 62xxx)
+ * @param {string} message - Isi pesan
+ * @returns {boolean}      - true jika berhasil
+ */
+const sendWhatsappOTP = async (phone, message) => {
   try {
     const token = process.env.FONNTE_TOKEN;
-    const message = `*IoTernak Security*
-Kode Verifikasi Anda: *${otp}*
-
-Jangan berikan kode ini kepada siapa pun.
-Kode berlaku selama 5 menit.`;
 
     const response = await axios.post(
       "https://api.fonnte.com/send",
@@ -37,7 +43,7 @@ Kode berlaku selama 5 menit.`;
       },
     );
 
-    console.log(`Log Fonnte ke ${phone}:`, response.data);
+    console.log(`📲 Log Fonnte ke ${phone}:`, response.data);
 
     if (response.data.status) {
       return true;
