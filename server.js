@@ -268,12 +268,10 @@ app.post("/api/claim-device", async (req, res) => {
 
     const device = check.rows[0];
     if (device.owned_by !== null && device.owned_by != user_id) {
-      return res
-        .status(403)
-        .json({
-          status: "error",
-          message: "Perangkat sudah dimiliki orang lain!",
-        });
+      return res.status(403).json({
+        status: "error",
+        message: "Perangkat sudah dimiliki orang lain!",
+      });
     }
 
     if (barn_id != null) {
@@ -687,36 +685,32 @@ app.get("/api/barn-finances", async (req, res) => {
 // POST /api/barn-finances — catat pengeluaran baru
 app.post("/api/barn-finances", async (req, res) => {
   try {
-    const { barn_id, user_id, category, description, amount, recorded_at } =
-      req.body;
+    const { barn_id, user_id, category, description, amount } = req.body;
 
     if (!barn_id || !user_id || !amount) {
-      return res
-        .status(400)
-        .json({
-          status: "error",
-          message: "barn_id, user_id, dan amount wajib diisi",
-        });
+      return res.status(400).json({
+        status: "error",
+        message: "barn_id, user_id, dan amount wajib diisi",
+      });
     }
 
     const result = await pool.query(
-      `INSERT INTO barn_finances (barn_id, user_id, category, description, amount, recorded_at)
-       VALUES ($1, $2, $3, $4, $5, COALESCE($6::timestamp, NOW()))
+      `INSERT INTO barn_finances (barn_id, user_id, category, description, amount)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING *`,
       [
         barn_id,
         user_id,
         category || "lainnya",
-        description,
+        description || null, // Atasi string kosong
         amount,
-        recorded_at || null,
       ],
     );
 
     res.status(201).json({ status: "success", data: result.rows[0] });
   } catch (err) {
     console.error("Add Barn Finance Error:", err);
-    res.status(500).json({ error: "Server Error" });
+    res.status(500).json({ error: "Server Error", details: err.message });
   }
 });
 
@@ -779,12 +773,10 @@ app.post("/api/barn-feed-logs", async (req, res) => {
     } = req.body;
 
     if (!barn_id || quantity_kg === undefined) {
-      return res
-        .status(400)
-        .json({
-          status: "error",
-          message: "barn_id dan quantity_kg wajib diisi",
-        });
+      return res.status(400).json({
+        status: "error",
+        message: "barn_id dan quantity_kg wajib diisi",
+      });
     }
 
     const result = await pool.query(
