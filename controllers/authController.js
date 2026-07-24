@@ -1,3 +1,4 @@
+// controllers/authController.js
 const pool = require("../config/db");
 const { formatPhoneNumber, sendWhatsappOTP } = require("../utils/whatsapp");
 
@@ -19,9 +20,9 @@ exports.requestOTP = async (req, res) => {
     }
 
     const formattedPhone = formatPhoneNumber(phone);
-    console.log(`[DEBUG] Cek User: ${formattedPhone} ATAU ${phone}`);
+    console.log(`[DEBUG] Memeriksa Pengguna: ${formattedPhone} ATAU ${phone}`);
 
-    // Cek apakah nomor sudah terdaftar
+    // Pengecekan apakah nomor sudah terdaftar
     const userCheck = await pool.query(
       "SELECT * FROM users WHERE phone_number = $1 OR phone_number = $2",
       [formattedPhone, phone],
@@ -29,7 +30,7 @@ exports.requestOTP = async (req, res) => {
 
     if (userCheck.rows.length > 0) {
       console.log(
-        `[BLOCKED] Nomor ${phone} sudah terdaftar sebagai ID: ${userCheck.rows[0].user_id}`,
+        `[BLOCKED] Nomor ${phone} sudah terdaftar dengan ID: ${userCheck.rows[0].user_id}`,
       );
       return res.status(400).json({
         status: "error",
@@ -38,21 +39,22 @@ exports.requestOTP = async (req, res) => {
     }
 
     const otp = generateOTP();
-    const expiresAt = new Date(Date.now() + 5 * 60000); // 5 menit
+    const expiresAt = new Date(Date.now() + 5 * 60000); // Masa berlaku 5 menit
 
-    // Hapus OTP lama
+    // Menghapus OTP lama jika ada
     await pool.query(
       "DELETE FROM otp_verifications WHERE phone_number = $1 OR phone_number = $2",
       [formattedPhone, phone],
     );
 
-    // Simpan OTP baru
+    // Menyimpan OTP baru ke pangkalan data
     await pool.query(
       `INSERT INTO otp_verifications (phone_number, otp_code, expires_at) VALUES ($1, $2, $3)`,
       [formattedPhone, otp, expiresAt],
     );
-    console.log(`✅ OTP ${otp} disimpan untuk ${formattedPhone}`);
+    console.log(`✅ OTP tersimpan untuk ${formattedPhone}`);
 
+    // Mengirim pesan melalui whatsapp-web.js
     const isSent = await sendWhatsappOTP(formattedPhone, otp);
 
     if (isSent) {
@@ -60,7 +62,7 @@ exports.requestOTP = async (req, res) => {
     } else {
       res.status(500).json({
         status: "error",
-        message: "Gagal kirim WA (Cek Token Fonnte)",
+        message: "Gagal mengirim WhatsApp. Periksa koneksi atau sesi Client.",
       });
     }
   } catch (error) {
@@ -88,7 +90,7 @@ exports.registerWithOTP = async (req, res) => {
 
     const formattedPhone = formatPhoneNumber(phone);
 
-    // A. Verifikasi OTP (format 62 atau format input user)
+    // A. Verifikasi OTP (memeriksa format 62 atau format masukan pengguna)
     const otpCheck = await pool.query(
       `SELECT * FROM otp_verifications
        WHERE (phone_number = $1 OR phone_number = $2)
@@ -100,10 +102,13 @@ exports.registerWithOTP = async (req, res) => {
     if (otpCheck.rows.length === 0) {
       return res
         .status(400)
-        .json({ status: "error", message: "Kode OTP salah atau kedaluwarsa." });
+        .json({
+          status: "error",
+          message: "Kode OTP salah atau telah kedaluwarsa.",
+        });
     }
 
-    // B. Simpan user baru (simpan format 62 sebagai standar)
+    // B. Menyimpan pengguna baru dengan format nomor 62
     const newUser = await pool.query(
       `INSERT INTO users (full_name, phone_number)
        VALUES ($1, $2)
@@ -111,13 +116,13 @@ exports.registerWithOTP = async (req, res) => {
       [full_name, formattedPhone],
     );
 
-    // C. Bersihkan OTP yang sudah dipakai
+    // C. Menghapus OTP yang sudah diverifikasi dari tabel
     await pool.query(
       "DELETE FROM otp_verifications WHERE phone_number = $1 OR phone_number = $2",
       [formattedPhone, phone],
     );
 
-    console.log(`🎉 User Baru Terdaftar: ${full_name}`);
+    console.log(`🎉 Pengguna Baru Terdaftar: ${full_name}`);
 
     res.status(201).json({
       status: "success",

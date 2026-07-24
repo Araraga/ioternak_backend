@@ -7,13 +7,21 @@ const path = require("path");
 const pool = require("./config/db");
 const aiController = require("./controllers/ai_controller");
 const authRoutes = require("./routes/authRoutes");
-const { formatPhoneNumber, sendWhatsappOTP } = require("./utils/whatsapp");
+// [UPDATE]: Tambahkan initializeWhatsApp pada import
+const {
+  formatPhoneNumber,
+  sendWhatsappOTP,
+  initializeWhatsApp,
+} = require("./utils/whatsapp");
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// [UPDATE]: Inisialisasi WhatsApp saat server berjalan
+initializeWhatsApp();
 
 // ============================================================
 // MQTT
