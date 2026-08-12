@@ -164,7 +164,7 @@ app.get("/api/firmware/check", (req, res) => {
   } else {
     res.json({
       status: "success",
-      latest_version: "1.0.1",
+      latest_version: "1.0.2",
       download_url: "http://38.103.170.74:3000/firmware/update_iopakan.bin",
     });
   }
@@ -393,20 +393,22 @@ app.post("/api/schedule", async (req, res) => {
       [id, JSON.stringify(newSchedule.times)],
     );
 
-    // 2. Cek status koneksi MQTT sebelum publish
+    // 2. Cek koneksi MQTT sebelum publish
     if (!mqttClient.connected) {
       console.error(
-        `[SCHEDULE] ⚠️ MQTT client tidak terhubung! Jadwal disimpan ke DB tapi tidak dikirim ke perangkat ${id}`,
+        `[SCHEDULE] ⚠️ MQTT tidak terhubung! Jadwal disimpan di DB tapi tidak dikirim ke ${id}`,
       );
-      return res.status(503).json({ error: "MQTT tidak terhubung, coba lagi" });
+      return res
+        .status(503)
+        .json({ error: "MQTT tidak terhubung, coba beberapa saat lagi" });
     }
 
     const topic = `devices/${id}/commands/set_schedule`;
     const payload = JSON.stringify(newSchedule);
 
-    console.log(`[SCHEDULE] 📤 Mengirim jadwal ke ${topic}:`, payload);
+    console.log(`[SCHEDULE] 📤 Mengirim ke ${topic}: ${payload}`);
 
-    // 3. Publish dengan callback error
+    // 3. Publish dengan callback untuk deteksi error
     mqttClient.publish(topic, payload, { qos: 1, retain: true }, (err) => {
       if (err) {
         console.error(`[SCHEDULE] ❌ Gagal publish ke ${topic}:`, err.message);
