@@ -382,6 +382,9 @@ app.post("/api/schedule", async (req, res) => {
     const { id } = req.query;
     const newSchedule = req.body;
 
+    if (!id) return res.status(400).json({ error: "Device ID required" });
+
+    // 1. Simpan ke database
     await pool.query(
       `INSERT INTO schedules (device_id, times)
        VALUES ($1, $2)
@@ -390,11 +393,27 @@ app.post("/api/schedule", async (req, res) => {
       [id, JSON.stringify(newSchedule.times)],
     );
 
-    mqttClient.publish(
-      `devices/${id}/commands/set_schedule`,
-      JSON.stringify(newSchedule),
-      { qos: 1, retain: true },
-    );
+    // 2. Cek status koneksi MQTT sebelum publish
+    if (!mqttClient.connected) {
+      console.error(
+        `[SCHEDULE] ⚠️ MQTT client tidak terhubung! Jadwal disimpan ke DB tapi tidak dikirim ke perangkat ${id}`,
+      );
+      return res.status(503).json({ error: "MQTT tidak terhubung, coba lagi" });
+    }
+
+    const topic = `devices/${id}/commands/set_schedule`;
+    const payload = JSON.stringify(newSchedule);
+
+    console.log(`[SCHEDULE] 📤 Mengirim jadwal ke ${topic}:`, payload);
+
+    // 3. Publish dengan callback error
+    mqttClient.publish(topic, payload, { qos: 1, retain: true }, (err) => {
+      if (err) {
+        console.error(`[SCHEDULE] ❌ Gagal publish ke ${topic}:`, err.message);
+      } else {
+        console.log(`[SCHEDULE] ✅ Jadwal berhasil dikirim ke perangkat ${id}`);
+      }
+    });
 
     res.json({ status: "success" });
   } catch (err) {
