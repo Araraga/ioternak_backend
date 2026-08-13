@@ -7,7 +7,6 @@ const path = require("path");
 const pool = require("./config/db");
 const aiController = require("./controllers/ai_controller");
 const authRoutes = require("./routes/authRoutes");
-// [UPDATE]: Tambahkan initializeWhatsApp pada import
 const {
   formatPhoneNumber,
   sendWhatsappOTP,
@@ -20,11 +19,11 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// [UPDATE]: Inisialisasi WhatsApp saat server berjalan
+// Inisialisasi WhatsApp saat server berjalan
 initializeWhatsApp();
 
 // ============================================================
-// MQTT
+// MQTT BROKER SETUP
 // ============================================================
 
 const mqttClient = mqtt.connect(process.env.MQTT_BROKER_URL, {
@@ -38,7 +37,7 @@ const mqttClient = mqtt.connect(process.env.MQTT_BROKER_URL, {
 mqttClient.on("connect", () => {
   console.log("✅ Terhubung ke HiveMQ Broker!");
   mqttClient.subscribe(["devices/+/data", "devices/+/register"], (err) => {
-    if (err) console.error("Gagal subscribe:", err);
+    if (err) console.error("❌ Gagal subscribe MQTT:", err);
     else console.log("📡 Listening: Data & Register...");
   });
 });
@@ -63,7 +62,7 @@ mqttClient.on("message", async (topic, message) => {
       return;
     }
 
-    // ── DATA ───────────────────────────────────────────────
+    // ── DATA SENSOR ───────────────────────────────────────
     if (action === "data") {
       let rawData = JSON.parse(message.toString());
       let data = Array.isArray(rawData) ? rawData[0] : rawData;
@@ -75,7 +74,7 @@ mqttClient.on("message", async (topic, message) => {
         `[DATA] ${deviceId}: Suhu=${data.temperature}°C  Gas=${gasValue} PPM`,
       );
 
-      // Pastikan device ada
+      // Pastikan device ada di database
       await pool.query(
         `INSERT INTO devices (device_id, device_name, type, whatsapp_number)
          VALUES ($1, $2, 'IoPeka', '')
@@ -116,7 +115,7 @@ mqttClient.on("message", async (topic, message) => {
         alertMessage = `*PERINGATAN AMONIA TINGGI!*\nLokasi: ${device.device_name}\nGas: ${gasValue} PPM`;
       }
 
-      // Simpan notifikasi ke DB jika ada peringatan dan device punya owner
+      // Simpan notifikasi ke DB jika ada peringatan
       if (notifType && device.owned_by) {
         await pool.query(
           `INSERT INTO notifications (user_id, device_id, barn_id, type, title, body)
@@ -148,7 +147,7 @@ mqttClient.on("message", async (topic, message) => {
 });
 
 // ============================================================
-// FIRMWARE
+// FIRMWARE OTA
 // ============================================================
 
 app.use("/firmware", express.static(path.join(__dirname, "firmware")));
@@ -170,21 +169,11 @@ app.get("/api/firmware/check", (req, res) => {
   }
 });
 
-// ============================================================
-// ROOT
-// ============================================================
-
+// Root
 app.get("/", (req, res) => res.send("🚀 Backend IoTernak Running!"));
 
-// ============================================================
-// AUTH ROUTES (OTP, register)
-// ============================================================
-
+// Auth
 app.use("/auth", authRoutes);
-
-// ============================================================
-// AUTH — LOGIN (phone-based, no password)
-// ============================================================
 
 app.post("/api/login", async (req, res) => {
   try {
@@ -193,7 +182,6 @@ app.post("/api/login", async (req, res) => {
       return res.status(400).json({ error: "Nomor telepon wajib diisi" });
 
     const formatted = formatPhoneNumber(phone);
-
     const result = await pool.query(
       "SELECT * FROM users WHERE phone_number = $1",
       [formatted],
@@ -213,10 +201,9 @@ app.post("/api/login", async (req, res) => {
 });
 
 // ============================================================
-// DEVICES
+// DEVICES MANAGEMENT
 // ============================================================
 
-// GET /api/my-devices?user_id=
 app.get("/api/my-devices", async (req, res) => {
   try {
     const { user_id } = req.query;
@@ -241,7 +228,6 @@ app.get("/api/my-devices", async (req, res) => {
   }
 });
 
-// GET /api/check-device?id=
 app.get("/api/check-device", async (req, res) => {
   try {
     const { id } = req.query;
@@ -258,7 +244,6 @@ app.get("/api/check-device", async (req, res) => {
   }
 });
 
-// POST /api/claim-device
 app.post("/api/claim-device", async (req, res) => {
   try {
     const { device_id, user_id, user_phone, barn_id } = req.body;
@@ -305,7 +290,6 @@ app.post("/api/claim-device", async (req, res) => {
   }
 });
 
-// POST /api/release-device
 app.post("/api/release-device", async (req, res) => {
   try {
     const { device_id, user_id } = req.body;
@@ -326,11 +310,7 @@ app.post("/api/release-device", async (req, res) => {
   }
 });
 
-// ============================================================
-// SENSOR DATA
-// ============================================================
-
-// GET /api/sensor-data?id=
+// Sensor Data
 app.get("/api/sensor-data", async (req, res) => {
   try {
     const { id } = req.query;
@@ -349,7 +329,7 @@ app.get("/api/sensor-data", async (req, res) => {
 });
 
 // ============================================================
-// SCHEDULE (IoPakan feeder)
+// SCHEDULE & PORTION (IoPakan Feeder)
 // ============================================================
 
 // GET /api/get-schedule?id=
@@ -364,11 +344,40 @@ app.get("/api/get-schedule", async (req, res) => {
     );
 
     if (result.rows.length > 0) {
-      let times = result.rows[0].times;
-      if (typeof times === "string") times = JSON.parse(times);
-      res.json({ status: "success", data: { times } });
+      let rawTimes = result.rows[0].times;
+      let parsed = { times: [], portion: "sedang", rotations: 5 };
+
+      if (typeof rawTimes === "string") {
+        try {
+          const temp = JSON.parse(rawTimes);
+          if (temp && typeof temp === "object" && !Array.isArray(temp)) {
+            parsed = {
+              times: temp.times || [],
+              portion: temp.portion || "sedang",
+              rotations: temp.rotations || 5,
+            };
+          } else if (Array.isArray(temp)) {
+            parsed.times = temp;
+          }
+        } catch (_) {
+          parsed.times = [];
+        }
+      } else if (Array.isArray(rawTimes)) {
+        parsed.times = rawTimes;
+      } else if (typeof rawTimes === "object" && rawTimes !== null) {
+        parsed = {
+          times: rawTimes.times || [],
+          portion: rawTimes.portion || "sedang",
+          rotations: rawTimes.rotations || 5,
+        };
+      }
+
+      res.json({ status: "success", data: parsed });
     } else {
-      res.json({ status: "success", data: { times: [] } });
+      res.json({
+        status: "success",
+        data: { times: [], portion: "sedang", rotations: 5 },
+      });
     }
   } catch (err) {
     console.error("Get Schedule Error:", err);
@@ -380,20 +389,33 @@ app.get("/api/get-schedule", async (req, res) => {
 app.post("/api/schedule", async (req, res) => {
   try {
     const { id } = req.query;
-    const newSchedule = req.body;
+    const body = req.body || {};
 
     if (!id) return res.status(400).json({ error: "Device ID required" });
 
-    // 1. Simpan ke database
+    // Ekstrak parameter jam pakan dan kuantitas (portion)
+    const timesArray = Array.isArray(body.times) ? body.times : [];
+    const portion = body.portion || "sedang";
+    const rotations =
+      Number(body.rotations) ||
+      (portion === "sedikit" ? 3 : portion === "banyak" ? 8 : 5);
+
+    const payloadObj = {
+      times: timesArray,
+      portion: portion,
+      rotations: rotations,
+    };
+
+    // 1. Simpan ke database PostgreSQL
     await pool.query(
       `INSERT INTO schedules (device_id, times)
        VALUES ($1, $2)
        ON CONFLICT (device_id)
        DO UPDATE SET times = $2, updated_at = NOW()`,
-      [id, JSON.stringify(newSchedule.times)],
+      [id, JSON.stringify(payloadObj)],
     );
 
-    // 2. Cek koneksi MQTT sebelum publish
+    // 2. Cek koneksi MQTT
     if (!mqttClient.connected) {
       console.error(
         `[SCHEDULE] ⚠️ MQTT tidak terhubung! Jadwal disimpan di DB tapi tidak dikirim ke ${id}`,
@@ -404,31 +426,29 @@ app.post("/api/schedule", async (req, res) => {
     }
 
     const topic = `devices/${id}/commands/set_schedule`;
-    const payload = JSON.stringify(newSchedule);
+    const payloadStr = JSON.stringify(payloadObj);
 
-    console.log(`[SCHEDULE] 📤 Mengirim ke ${topic}: ${payload}`);
+    console.log(`[SCHEDULE] 📤 Mengirim ke ${topic}: ${payloadStr}`);
 
-    // 3. Publish dengan callback untuk deteksi error
-    mqttClient.publish(topic, payload, { qos: 1, retain: true }, (err) => {
+    // 3. Publish dengan QOS 1 & retained=true agar ESP32 menyimpan jadwal
+    mqttClient.publish(topic, payloadStr, { qos: 1, retain: true }, (err) => {
       if (err) {
         console.error(`[SCHEDULE] ❌ Gagal publish ke ${topic}:`, err.message);
       } else {
-        console.log(`[SCHEDULE] ✅ Jadwal berhasil dikirim ke perangkat ${id}`);
+        console.log(
+          `[SCHEDULE] ✅ Jadwal & porsi berhasil dikirim ke perangkat ${id}`,
+        );
       }
     });
 
-    res.json({ status: "success" });
+    res.json({ status: "success", data: payloadObj });
   } catch (err) {
     console.error("Schedule Error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// ============================================================
-// BARNS
-// ============================================================
-
-// GET /api/barns?user_id=
+// Barns & Barn Finances
 app.get("/api/barns", async (req, res) => {
   try {
     const { user_id } = req.query;
@@ -454,7 +474,6 @@ app.get("/api/barns", async (req, res) => {
   }
 });
 
-// GET /api/barn/:barn_id
 app.get("/api/barn/:barn_id", async (req, res) => {
   try {
     const { barn_id } = req.params;
@@ -483,7 +502,6 @@ app.get("/api/barn/:barn_id", async (req, res) => {
   }
 });
 
-// GET /api/barn-summary/:barn_id — ringkasan kandang untuk AI context
 app.get("/api/barn-summary/:barn_id", async (req, res) => {
   try {
     const { barn_id } = req.params;
@@ -498,7 +516,6 @@ app.get("/api/barn-summary/:barn_id", async (req, res) => {
     }
     const barn = barnRes.rows[0];
 
-    // Ambil sensor data terbaru dari semua perangkat kandang
     const devicesRes = await pool.query(
       "SELECT device_id FROM devices WHERE barn_id = $1",
       [barn_id],
@@ -517,7 +534,6 @@ app.get("/api/barn-summary/:barn_id", async (req, res) => {
       latestSensor = sensorRes.rows[0] || null;
     }
 
-    // Total keuangan bulan ini
     const financeRes = await pool.query(
       `SELECT COALESCE(SUM(amount), 0) AS total_this_month
        FROM barn_finances
@@ -541,7 +557,6 @@ app.get("/api/barn-summary/:barn_id", async (req, res) => {
   }
 });
 
-// POST /api/barn — buat kandang baru
 app.post("/api/barn", async (req, res) => {
   try {
     const {
@@ -587,7 +602,6 @@ app.post("/api/barn", async (req, res) => {
   }
 });
 
-// PUT /api/barn/:barn_id — update kandang
 app.put("/api/barn/:barn_id", async (req, res) => {
   try {
     const { barn_id } = req.params;
@@ -611,7 +625,7 @@ app.put("/api/barn/:barn_id", async (req, res) => {
     let index = 1;
 
     for (const key of Object.keys(updates)) {
-      if (!ALLOWED_KEYS.includes(key)) continue; // whitelist
+      if (!ALLOWED_KEYS.includes(key)) continue;
       setClauses.push(`${key} = $${index}`);
       values.push(updates[key]);
       index++;
@@ -639,7 +653,6 @@ app.put("/api/barn/:barn_id", async (req, res) => {
   }
 });
 
-// DELETE /api/barn/:barn_id — hapus kandang
 app.delete("/api/barn/:barn_id", async (req, res) => {
   try {
     const { barn_id } = req.params;
@@ -659,11 +672,7 @@ app.delete("/api/barn/:barn_id", async (req, res) => {
   }
 });
 
-// ============================================================
-// BARN FINANCES — Keuangan Kandang
-// ============================================================
-
-// GET /api/barn-finances?barn_id=
+// Barn Finances
 app.get("/api/barn-finances", async (req, res) => {
   try {
     const { barn_id } = req.query;
@@ -673,17 +682,12 @@ app.get("/api/barn-finances", async (req, res) => {
         .json({ status: "error", message: "barn_id diperlukan" });
 
     const result = await pool.query(
-      `SELECT * FROM barn_finances
-       WHERE barn_id = $1
-       ORDER BY recorded_at DESC`,
+      `SELECT * FROM barn_finances WHERE barn_id = $1 ORDER BY recorded_at DESC`,
       [barn_id],
     );
 
-    // Hitung total per kategori bulan ini
     const summaryRes = await pool.query(
-      `SELECT category,
-              SUM(amount) AS total,
-              COUNT(*) AS count
+      `SELECT category, SUM(amount) AS total, COUNT(*) AS count
        FROM barn_finances
        WHERE barn_id = $1
          AND EXTRACT(MONTH FROM recorded_at) = EXTRACT(MONTH FROM NOW())
@@ -711,7 +715,6 @@ app.get("/api/barn-finances", async (req, res) => {
   }
 });
 
-// POST /api/barn-finances — catat pengeluaran baru
 app.post("/api/barn-finances", async (req, res) => {
   try {
     const { barn_id, user_id, category, description, amount } = req.body;
@@ -727,13 +730,7 @@ app.post("/api/barn-finances", async (req, res) => {
       `INSERT INTO barn_finances (barn_id, user_id, category, description, amount)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING *`,
-      [
-        barn_id,
-        user_id,
-        category || "lainnya",
-        description || null, // Atasi string kosong
-        amount,
-      ],
+      [barn_id, user_id, category || "lainnya", description || null, amount],
     );
 
     res.status(201).json({ status: "success", data: result.rows[0] });
@@ -743,11 +740,7 @@ app.post("/api/barn-finances", async (req, res) => {
   }
 });
 
-// ============================================================
-// BARN FEED LOGS — Log Pemberian Pakan
-// ============================================================
-
-// GET /api/barn-feed-logs?barn_id=
+// Barn Feed Logs
 app.get("/api/barn-feed-logs", async (req, res) => {
   try {
     const { barn_id } = req.query;
@@ -757,20 +750,14 @@ app.get("/api/barn-feed-logs", async (req, res) => {
         .json({ status: "error", message: "barn_id diperlukan" });
 
     const result = await pool.query(
-      `SELECT * FROM barn_feed_logs
-       WHERE barn_id = $1
-       ORDER BY logged_at DESC
-       LIMIT 100`,
+      `SELECT * FROM barn_feed_logs WHERE barn_id = $1 ORDER BY logged_at DESC LIMIT 100`,
       [barn_id],
     );
 
-    // Total pakan hari ini (dalam kg)
     const todayRes = await pool.query(
       `SELECT COALESCE(SUM(quantity_kg), 0) AS total_today
        FROM barn_feed_logs
-       WHERE barn_id = $1
-         AND status = 'selesai'
-         AND DATE(logged_at) = CURRENT_DATE`,
+       WHERE barn_id = $1 AND status = 'selesai' AND DATE(logged_at) = CURRENT_DATE`,
       [barn_id],
     );
 
@@ -785,7 +772,6 @@ app.get("/api/barn-feed-logs", async (req, res) => {
   }
 });
 
-// POST /api/barn-feed-logs — catat log pakan baru
 app.post("/api/barn-feed-logs", async (req, res) => {
   try {
     const {
@@ -836,11 +822,7 @@ app.post("/api/barn-feed-logs", async (req, res) => {
   }
 });
 
-// ============================================================
-// NOTIFICATIONS
-// ============================================================
-
-// GET /api/notifications?user_id=
+// Notifications
 app.get("/api/notifications", async (req, res) => {
   try {
     const { user_id } = req.query;
@@ -850,15 +832,11 @@ app.get("/api/notifications", async (req, res) => {
         .json({ status: "error", message: "user_id diperlukan" });
 
     const result = await pool.query(
-      `SELECT * FROM notifications
-       WHERE user_id = $1
-       ORDER BY created_at DESC
-       LIMIT 100`,
+      `SELECT * FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100`,
       [user_id],
     );
 
     const unread = result.rows.filter((n) => !n.is_read).length;
-
     res.json({ status: "success", data: result.rows, unread_count: unread });
   } catch (err) {
     console.error("Get Notifications Error:", err);
@@ -866,7 +844,6 @@ app.get("/api/notifications", async (req, res) => {
   }
 });
 
-// PATCH /api/notifications/:id/read — tandai satu notifikasi sudah dibaca
 app.patch("/api/notifications/:id/read", async (req, res) => {
   try {
     const { id } = req.params;
@@ -880,8 +857,6 @@ app.patch("/api/notifications/:id/read", async (req, res) => {
   }
 });
 
-// DELETE /api/notifications/clear — hapus semua notifikasi user
-// NOTE: Harus sebelum route /:id agar tidak tertangkap sebagai id=clear
 app.delete("/api/notifications/clear", async (req, res) => {
   try {
     const { user_id } = req.query;
@@ -898,11 +873,7 @@ app.delete("/api/notifications/clear", async (req, res) => {
   }
 });
 
-// ============================================================
-// SUBSCRIPTION
-// ============================================================
-
-// GET /api/my-subscription?user_id=
+// Subscriptions
 app.get("/api/my-subscription", async (req, res) => {
   try {
     const { user_id } = req.query;
@@ -913,23 +884,15 @@ app.get("/api/my-subscription", async (req, res) => {
 
     const result = await pool.query(
       `SELECT
-          o.id,
-          o.order_code,
-          o.device_id,
-          o.duration,
-          o.total_bill,
-          o.status,
-          o.created_at,
+          o.id, o.order_code, o.device_id, o.duration, o.total_bill, o.status, o.created_at,
           (o.created_at + (o.duration || ' months')::interval) AS expired_date,
           CASE
-            WHEN o.status = 'Success'
-              AND (o.created_at + (o.duration || ' months')::interval) > NOW()
+            WHEN o.status = 'Success' AND (o.created_at + (o.duration || ' months')::interval) > NOW()
             THEN 'Aktif'
             ELSE 'Habis'
           END AS subscription_status
        FROM orders o
-       WHERE o.user_id = $1
-         AND o.status = 'Success'
+       WHERE o.user_id = $1 AND o.status = 'Success'
        ORDER BY o.created_at DESC`,
       [user_id],
     );
@@ -941,17 +904,14 @@ app.get("/api/my-subscription", async (req, res) => {
   }
 });
 
-// ============================================================
-// AI CHAT
-// ============================================================
-
+// AI Chat
 app.post("/api/chat", aiController.chatWithAssistant);
 
 // ============================================================
 // CRON JOBS
 // ============================================================
 
-// Bersihkan sensor data > 7 hari
+// Clean sensor data > 7 days
 cron.schedule("0 0 * * *", async () => {
   console.log("🧹 [CRON] Membersihkan data sensor lama...");
   try {
@@ -964,15 +924,13 @@ cron.schedule("0 0 * * *", async () => {
   }
 });
 
-// Periksa & kunci device yang langganannya habis
+// Check expired subscriptions
 cron.schedule("0 1 * * *", async () => {
   console.log("🔒 [CRON] Memeriksa masa langganan perangkat...");
   try {
     const result = await pool.query(
-      `SELECT device_id
-       FROM orders
-       WHERE status = 'Success'
-         AND (created_at + (duration || ' months')::interval) < NOW()`,
+      `SELECT device_id FROM orders
+       WHERE status = 'Success' AND (created_at + (duration || ' months')::interval) < NOW()`,
     );
 
     for (let row of result.rows) {
@@ -988,7 +946,7 @@ cron.schedule("0 1 * * *", async () => {
   }
 });
 
-// Bersihkan notifikasi > 30 hari
+// Clean notifications > 30 days
 cron.schedule("0 2 * * *", async () => {
   console.log("🔔 [CRON] Membersihkan notifikasi lama...");
   try {
