@@ -515,6 +515,44 @@ app.post("/api/schedule", async (req, res) => {
   }
 });
 
+// POST /api/trigger-feed?id=   ← debug: trigger pakan manual via MQTT
+app.post("/api/trigger-feed", async (req, res) => {
+  try {
+    const { id } = req.query;
+    const body = req.body || {};
+
+    if (!id) return res.status(400).json({ error: "Device ID required" });
+
+    const portion = body.portion || "sedang";
+    const rotations =
+      body.rotations != null
+        ? Number(body.rotations)
+        : portionToRotations(portion);
+
+    if (!mqttClient.connected) {
+      return res.status(503).json({ error: "MQTT tidak terhubung" });
+    }
+
+    const topic = `devices/${id}/commands/feed`;
+    const payloadStr = JSON.stringify({ portion, rotations });
+
+    console.log(`[FEED] 🐔 Trigger manual ke ${topic}: ${payloadStr}`);
+
+    mqttClient.publish(topic, payloadStr, { qos: 1 }, (err) => {
+      if (err) {
+        console.error(`[FEED] ❌ Gagal publish:`, err.message);
+      } else {
+        console.log(`[FEED] ✅ Perintah pakan dikirim ke ${id}`);
+      }
+    });
+
+    res.json({ status: "success", data: { portion, rotations } });
+  } catch (err) {
+    console.error("Trigger Feed Error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // ============================================================
 // BARNS & BARN FINANCES
 // ============================================================
