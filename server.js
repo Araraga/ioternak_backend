@@ -330,7 +330,97 @@ app.get("/api/sensor-data", async (req, res) => {
 
 // ============================================================
 // SCHEDULE & PORTION (IoPakan Feeder)
+// Format baru: per-jadwal masing-masing punya portion & rotations
 // ============================================================
+
+/**
+ * Kembalikan jumlah rotasi berdasarkan label porsi.
+ * Sedikit=3 | Sedang=6 | Banyak=10
+ */
+function portionToRotations(portion) {
+  if (portion === "sedikit") return 3;
+  if (portion === "banyak") return 10;
+  return 6; // sedang (default)
+}
+
+/**
+ * Normalise berbagai format `times` yang mungkin ada di DB ke format baru:
+ * [ { time: "HH:mm", portion: "sedang", rotations: 6 }, ... ]
+ *
+ * Format lama yang didukung:
+ *   A) { times: ["08:00","16:00"], portion: "sedang", rotations: 5 }  ← wrapper object
+ *   B) ["08:00", "16:00"]                                              ← plain string array
+ *   C) ["08:00|sedikit", "16:00|banyak"]                              ← Flutter lama dengan pipe
+ *   D) [{ time, portion, rotations }, ...]                             ← format baru (pass-through)
+ */
+function normaliseTimes(rawTimes) {
+  if (!rawTimes) return [];
+
+  // Format A: objek wrapper dengan .times array
+  if (
+    !Array.isArray(rawTimes) &&
+    typeof rawTimes === "object" &&
+    Array.isArray(rawTimes.times)
+  ) {
+    const globalPortion = rawTimes.portion || "sedang";
+    const globalRotations =
+      rawTimes.rotations != null
+        ? Number(rawTimes.rotations)
+        : portionToRotations(globalPortion);
+
+    return rawTimes.times
+      .map((t) => {
+        if (typeof t === "string") {
+          const parts = t.split("|");
+          const time = parts[0].trim();
+          const portion = parts[1] || globalPortion;
+          return {
+            time,
+            portion,
+            rotations: portionToRotations(portion),
+          };
+        }
+        // Sudah object
+        const portion = t.portion || globalPortion;
+        return {
+          time: t.time || "",
+          portion,
+          rotations:
+            t.rotations != null
+              ? Number(t.rotations)
+              : portionToRotations(portion),
+        };
+      })
+      .filter((s) => s.time.length > 0);
+  }
+
+  // Format B, C, D: array langsung
+  if (Array.isArray(rawTimes)) {
+    return rawTimes
+      .map((entry) => {
+        // Format D: sudah object per-slot
+        if (typeof entry === "object" && entry !== null) {
+          const portion = entry.portion || "sedang";
+          return {
+            time: entry.time || "",
+            portion,
+            rotations:
+              entry.rotations != null
+                ? Number(entry.rotations)
+                : portionToRotations(portion),
+          };
+        }
+        // Format B / C: string "HH:mm" atau "HH:mm|portion"
+        const parts = String(entry).split("|");
+        const time = parts[0].trim();
+        const portion = parts[1] || "sedang";
+        return { time, portion, rotations: portionToRotations(portion) };
+      })
+      .filter((s) => s.time.length > 0);
+  }
+
+  return [];
+}
 
 // GET /api/get-schedule?id=
 app.get("/api/get-schedule", async (req, res) => {
@@ -344,41 +434,26 @@ app.get("/api/get-schedule", async (req, res) => {
     );
 
     if (result.rows.length > 0) {
-      let rawTimes = result.rows[0].times;
-      let parsed = { times: [], portion: "sedang", rotations: 5 };
+      let raw = result.rows[0].times;
 
-      if (typeof rawTimes === "string") {
+      // PostgreSQL jsonb dapat langsung menjadi JS object/array
+      if (typeof raw === "string") {
         try {
-          const temp = JSON.parse(rawTimes);
-          if (temp && typeof temp === "object" && !Array.isArray(temp)) {
-            parsed = {
-              times: temp.times || [],
-              portion: temp.portion || "sedang",
-              rotations: temp.rotations || 5,
-            };
-          } else if (Array.isArray(temp)) {
-            parsed.times = temp;
-          }
+          raw = JSON.parse(raw);
         } catch (_) {
-          parsed.times = [];
+          raw = [];
         }
-      } else if (Array.isArray(rawTimes)) {
-        parsed.times = rawTimes;
-      } else if (typeof rawTimes === "object" && rawTimes !== null) {
-        parsed = {
-          times: rawTimes.times || [],
-          portion: rawTimes.portion || "sedang",
-          rotations: rawTimes.rotations || 5,
-        };
       }
 
-      res.json({ status: "success", data: parsed });
-    } else {
-      res.json({
-        status: "success",
-        data: { times: [], portion: "sedang", rotations: 5 },
-      });
+      // Jika raw adalah objek wrapper {times:[...], ...}, ambil inner times
+      const innerTimes =
+        raw && !Array.isArray(raw) && Array.isArray(raw.times) ? raw : raw;
+
+      const times = normaliseTimes(innerTimes);
+      return res.json({ status: "success", data: { times } });
     }
+
+    res.json({ status: "success", data: { times: [] } });
   } catch (err) {
     console.error("Get Schedule Error:", err);
     res.status(500).json({ error: "Server Error" });
@@ -393,20 +468,12 @@ app.post("/api/schedule", async (req, res) => {
 
     if (!id) return res.status(400).json({ error: "Device ID required" });
 
-    // Ekstrak parameter jam pakan dan kuantitas (portion)
-    const timesArray = Array.isArray(body.times) ? body.times : [];
-    const portion = body.portion || "sedang";
-    const rotations =
-      Number(body.rotations) ||
-      (portion === "sedikit" ? 3 : portion === "banyak" ? 8 : 5);
+    // Normalise apapun yang dikirim Flutter ke format per-slot
+    const times = normaliseTimes(body.times ?? body);
 
-    const payloadObj = {
-      times: timesArray,
-      portion: portion,
-      rotations: rotations,
-    };
+    const payloadObj = { times };
 
-    // 1. Simpan ke database PostgreSQL
+    // 1. Simpan ke PostgreSQL
     await pool.query(
       `INSERT INTO schedules (device_id, times)
        VALUES ($1, $2)
@@ -430,13 +497,13 @@ app.post("/api/schedule", async (req, res) => {
 
     console.log(`[SCHEDULE] 📤 Mengirim ke ${topic}: ${payloadStr}`);
 
-    // 3. Publish dengan QOS 1 & retained=true agar ESP32 menyimpan jadwal
+    // 3. Publish QOS 1 + retained agar ESP32 dapat jadwal setelah reconnect
     mqttClient.publish(topic, payloadStr, { qos: 1, retain: true }, (err) => {
       if (err) {
         console.error(`[SCHEDULE] ❌ Gagal publish ke ${topic}:`, err.message);
       } else {
         console.log(
-          `[SCHEDULE] ✅ Jadwal & porsi berhasil dikirim ke perangkat ${id}`,
+          `[SCHEDULE] ✅ Jadwal per-slot berhasil dikirim ke perangkat ${id}`,
         );
       }
     });
@@ -448,7 +515,10 @@ app.post("/api/schedule", async (req, res) => {
   }
 });
 
-// Barns & Barn Finances
+// ============================================================
+// BARNS & BARN FINANCES
+// ============================================================
+
 app.get("/api/barns", async (req, res) => {
   try {
     const { user_id } = req.query;
@@ -822,7 +892,10 @@ app.post("/api/barn-feed-logs", async (req, res) => {
   }
 });
 
-// Notifications
+// ============================================================
+// NOTIFICATIONS
+// ============================================================
+
 app.get("/api/notifications", async (req, res) => {
   try {
     const { user_id } = req.query;
@@ -873,7 +946,10 @@ app.delete("/api/notifications/clear", async (req, res) => {
   }
 });
 
-// Subscriptions
+// ============================================================
+// SUBSCRIPTIONS
+// ============================================================
+
 app.get("/api/my-subscription", async (req, res) => {
   try {
     const { user_id } = req.query;
@@ -904,14 +980,17 @@ app.get("/api/my-subscription", async (req, res) => {
   }
 });
 
-// AI Chat
+// ============================================================
+// AI CHAT
+// ============================================================
+
 app.post("/api/chat", aiController.chatWithAssistant);
 
 // ============================================================
 // CRON JOBS
 // ============================================================
 
-// Clean sensor data > 7 days
+// Hapus data sensor > 7 hari
 cron.schedule("0 0 * * *", async () => {
   console.log("🧹 [CRON] Membersihkan data sensor lama...");
   try {
@@ -924,7 +1003,7 @@ cron.schedule("0 0 * * *", async () => {
   }
 });
 
-// Check expired subscriptions
+// Cek langganan expired
 cron.schedule("0 1 * * *", async () => {
   console.log("🔒 [CRON] Memeriksa masa langganan perangkat...");
   try {
@@ -946,7 +1025,7 @@ cron.schedule("0 1 * * *", async () => {
   }
 });
 
-// Clean notifications > 30 days
+// Hapus notifikasi > 30 hari
 cron.schedule("0 2 * * *", async () => {
   console.log("🔔 [CRON] Membersihkan notifikasi lama...");
   try {
