@@ -330,31 +330,22 @@ app.get("/api/sensor-data", async (req, res) => {
 
 // ============================================================
 // SCHEDULE & PORTION (IoPakan Feeder)
-// Format baru: per-jadwal masing-masing punya portion & rotations
 // ============================================================
 
-/**
- * Kembalikan jumlah rotasi berdasarkan label porsi.
- * Sedikit=3 | Sedang=6 | Banyak=10
- */
 function portionToRotations(portion) {
   if (portion === "sedikit") return 3;
   if (portion === "banyak") return 10;
   return 6; // sedang (default)
 }
 
-/**
- * Normalise berbagai format `times` yang mungkin ada di DB ke format baru:
- * [ { time: "HH:mm", portion: "sedang", rotations: 6 }, ... ]
- *
- * Format lama yang didukung:
- *   A) { times: ["08:00","16:00"], portion: "sedang", rotations: 5 }  ← wrapper object
- *   B) ["08:00", "16:00"]                                              ← plain string array
- *   C) ["08:00|sedikit", "16:00|banyak"]                              ← Flutter lama dengan pipe
- *   D) [{ time, portion, rotations }, ...]                             ← format baru (pass-through)
- */
 function normaliseTimes(rawTimes) {
   if (!rawTimes) return [];
+
+  // PENTING: Mengekstrak teks jam (HH:mm) jika data sebelumnya tersimpan secara corrupt di DB
+  const cleanTimeStr = (raw) => {
+    const match = String(raw).match(/\b(\d{1,2}:\d{2})\b/);
+    return match ? match[1] : "";
+  };
 
   // Format A: objek wrapper dengan .times array
   if (
@@ -363,27 +354,21 @@ function normaliseTimes(rawTimes) {
     Array.isArray(rawTimes.times)
   ) {
     const globalPortion = rawTimes.portion || "sedang";
-    const globalRotations =
-      rawTimes.rotations != null
-        ? Number(rawTimes.rotations)
-        : portionToRotations(globalPortion);
 
     return rawTimes.times
       .map((t) => {
         if (typeof t === "string") {
           const parts = t.split("|");
-          const time = parts[0].trim();
           const portion = parts[1] || globalPortion;
           return {
-            time,
+            time: cleanTimeStr(parts[0]),
             portion,
             rotations: portionToRotations(portion),
           };
         }
-        // Sudah object
         const portion = t.portion || globalPortion;
         return {
-          time: t.time || "",
+          time: cleanTimeStr(t.time),
           portion,
           rotations:
             t.rotations != null
@@ -402,7 +387,7 @@ function normaliseTimes(rawTimes) {
         if (typeof entry === "object" && entry !== null) {
           const portion = entry.portion || "sedang";
           return {
-            time: entry.time || "",
+            time: cleanTimeStr(entry.time),
             portion,
             rotations:
               entry.rotations != null
@@ -412,9 +397,12 @@ function normaliseTimes(rawTimes) {
         }
         // Format B / C: string "HH:mm" atau "HH:mm|portion"
         const parts = String(entry).split("|");
-        const time = parts[0].trim();
         const portion = parts[1] || "sedang";
-        return { time, portion, rotations: portionToRotations(portion) };
+        return {
+          time: cleanTimeStr(parts[0]),
+          portion,
+          rotations: portionToRotations(portion),
+        };
       })
       .filter((s) => s.time.length > 0);
   }
@@ -445,9 +433,11 @@ app.get("/api/get-schedule", async (req, res) => {
         }
       }
 
-      // Jika raw adalah objek wrapper {times:[...], ...}, ambil inner times
+      // Perbaikan Bug: ambil raw.times (bukan memanggil raw) agar objek terekstrak dengan benar
       const innerTimes =
-        raw && !Array.isArray(raw) && Array.isArray(raw.times) ? raw : raw;
+        raw && !Array.isArray(raw) && Array.isArray(raw.times)
+          ? raw.times
+          : raw;
 
       const times = normaliseTimes(innerTimes);
       return res.json({ status: "success", data: { times } });
@@ -468,9 +458,8 @@ app.post("/api/schedule", async (req, res) => {
 
     if (!id) return res.status(400).json({ error: "Device ID required" });
 
-    // Normalise apapun yang dikirim Flutter ke format per-slot
+    // Menyaring dan memperbaiki jadwal yang rusak sebelum ditulis lagi ke PostgreSQL
     const times = normaliseTimes(body.times ?? body);
-
     const payloadObj = { times };
 
     // 1. Simpan ke PostgreSQL
