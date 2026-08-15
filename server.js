@@ -11,6 +11,7 @@ const {
   formatPhoneNumber,
   sendWhatsappOTP,
   initializeWhatsApp,
+  getWhatsappClient,
 } = require("./utils/whatsapp");
 
 const app = express();
@@ -19,8 +20,56 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Inisialisasi WhatsApp saat server berjalan
-initializeWhatsApp();
+// ============================================================
+// WHATSAPP INIT dengan AUTO-RECONNECT
+// ============================================================
+
+let waReady = false;
+let waInitializing = false;
+
+async function startWhatsApp() {
+  if (waInitializing) return;
+  waInitializing = true;
+  try {
+    await initializeWhatsApp();
+    waReady = true;
+    console.log("✅ WhatsApp siap!");
+  } catch (err) {
+    waReady = false;
+    console.error("❌ WhatsApp gagal init:", err.message);
+    // Retry dalam 30 detik
+    setTimeout(() => {
+      waInitializing = false;
+      startWhatsApp();
+    }, 30000);
+  } finally {
+    waInitializing = false;
+  }
+}
+
+startWhatsApp();
+
+/**
+ * Kirim pesan WhatsApp dengan penanganan error detached Frame.
+ * Jika gagal karena frame rusak, reinit WA lalu kirim ulang 1x.
+ */
+async function safeWhatsappSend(phone, message) {
+  try {
+    await sendWhatsappOTP(phone, message);
+  } catch (err) {
+    const isFrameError =
+      err && err.message && err.message.includes("detached Frame");
+    console.error("❌ Error mengirim WhatsApp:", err.message);
+
+    if (isFrameError && !waInitializing) {
+      console.log("♻️  Mendeteksi frame WA rusak, reinisialisasi...");
+      waReady = false;
+      waInitializing = false;
+      // Reinit di background, jangan tunggu — pesan ini hilang tapi berikutnya aman
+      startWhatsApp();
+    }
+  }
+}
 
 // ============================================================
 // MQTT BROKER SETUP
@@ -131,14 +180,14 @@ mqttClient.on("message", async (topic, message) => {
         );
       }
 
-      // Kirim WhatsApp alert
+      // Kirim WhatsApp alert (dengan auto-recovery jika WA crash)
       if (
         alertMessage &&
         device.whatsapp_number &&
         device.whatsapp_number.length > 5
       ) {
         const formattedWA = formatPhoneNumber(device.whatsapp_number);
-        await sendWhatsappOTP(formattedWA, alertMessage);
+        await safeWhatsappSend(formattedWA, alertMessage);
       }
     }
   } catch (err) {
@@ -241,6 +290,51 @@ app.get("/api/check-device", async (req, res) => {
   } catch (err) {
     console.error("Check Device Error:", err);
     res.status(500).json({ error: "DB Error" });
+  }
+});
+
+// ── DEVICE STATUS (online/offline berdasarkan sensor_data terbaru) ──────────
+// GET /api/device-status?ids=deviceId1,deviceId2,...
+// Device dianggap ONLINE jika mengirim data dalam 5 menit terakhir.
+app.get("/api/device-status", async (req, res) => {
+  try {
+    const { ids } = req.query;
+    if (!ids) return res.status(400).json({ error: "ids diperlukan" });
+
+    const deviceIds = ids
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean);
+    if (deviceIds.length === 0)
+      return res.json({ status: "success", data: {} });
+
+    // Ambil timestamp data terakhir untuk setiap device
+    const result = await pool.query(
+      `SELECT device_id, MAX(timestamp) AS last_seen
+       FROM sensor_data
+       WHERE device_id = ANY($1)
+       GROUP BY device_id`,
+      [deviceIds],
+    );
+
+    const ONLINE_THRESHOLD_MINUTES = 5;
+    const statusMap = {};
+
+    // Default semua offline
+    deviceIds.forEach((id) => (statusMap[id] = false));
+
+    // Set online jika last_seen dalam threshold
+    result.rows.forEach((row) => {
+      const lastSeen = new Date(row.last_seen);
+      const diffMs = Date.now() - lastSeen.getTime();
+      const diffMinutes = diffMs / 1000 / 60;
+      statusMap[row.device_id] = diffMinutes <= ONLINE_THRESHOLD_MINUTES;
+    });
+
+    res.json({ status: "success", data: statusMap });
+  } catch (err) {
+    console.error("Device Status Error:", err);
+    res.status(500).json({ error: "Server Error" });
   }
 });
 
@@ -433,7 +527,7 @@ app.get("/api/get-schedule", async (req, res) => {
         }
       }
 
-      // Perbaikan Bug: ambil raw.times (bukan memanggil raw) agar objek terekstrak dengan benar
+      // Perbaikan Bug: ambil raw.times agar objek terekstrak dengan benar
       const innerTimes =
         raw && !Array.isArray(raw) && Array.isArray(raw.times)
           ? raw.times
@@ -458,7 +552,6 @@ app.post("/api/schedule", async (req, res) => {
 
     if (!id) return res.status(400).json({ error: "Device ID required" });
 
-    // Menyaring dan memperbaiki jadwal yang rusak sebelum ditulis lagi ke PostgreSQL
     const times = normaliseTimes(body.times ?? body);
     const payloadObj = { times };
 
@@ -504,7 +597,7 @@ app.post("/api/schedule", async (req, res) => {
   }
 });
 
-// POST /api/trigger-feed?id=   ← debug: trigger pakan manual via MQTT
+// POST /api/trigger-feed?id=  ← trigger pakan manual via MQTT
 app.post("/api/trigger-feed", async (req, res) => {
   try {
     const { id } = req.query;
@@ -1063,6 +1156,14 @@ cron.schedule("0 2 * * *", async () => {
   } catch (err) {
     console.error("Gagal membersihkan notifikasi:", err.message);
   }
+});
+
+// Restart WhatsApp setiap malam jam 03:00 (cegah memory leak & frame rusak)
+cron.schedule("0 3 * * *", () => {
+  console.log("♻️  [CRON] Restart rutin WhatsApp...");
+  waReady = false;
+  waInitializing = false;
+  startWhatsApp();
 });
 
 // ============================================================
