@@ -13,14 +13,13 @@ exports.chatWithAssistant = async (req, res) => {
     });
   }
 
-  try {
-    let sensorContext =
-      "Saat ini tidak ada data sensor spesifik yang terlampir.";
-    let barnContext = "Saat ini tidak ada data manajemen kandang tambahan.";
-    let financeContext = "";
+  let sensorContext = "Saat ini tidak ada data sensor spesifik yang terlampir.";
+  let barnContext = "Saat ini tidak ada data manajemen kandang tambahan.";
+  let financeContext = "";
 
-    // ── Context: device_id ─────────────────────────────────
-    if (device_id && device_id.trim() !== "") {
+  // 1. Ambil Context dengan pelindung try-catch agar kegagalan DB tidak memutus Groq
+  try {
+    if (device_id && String(device_id).trim() !== "") {
       const sensorRes = await pool.query(
         `SELECT temperature, humidity, gas_ppm, timestamp
          FROM sensor_data
@@ -60,13 +59,13 @@ exports.chatWithAssistant = async (req, res) => {
               `- Catatan: ${barn.description || "-"}.\n` +
               `- Perangkat: ${barn.device_name || device_id}.`;
 
-            // Keuangan kandang bulan ini
             if (barn.id) {
               const finRes = await pool.query(
                 `SELECT category, SUM(amount) AS total
                  FROM barn_finances
                  WHERE barn_id = $1
                    AND EXTRACT(MONTH FROM recorded_at) = EXTRACT(MONTH FROM NOW())
+                   AND EXTRACT(YEAR FROM recorded_at)  = EXTRACT(YEAR FROM NOW())
                  GROUP BY category`,
                 [barn.id],
               );
@@ -87,9 +86,7 @@ exports.chatWithAssistant = async (req, res) => {
           }
         }
       }
-
-      // ── Context: barn_id ────────────────────────────────────
-    } else if (barn_id && barn_id.toString().trim() !== "") {
+    } else if (barn_id && String(barn_id).trim() !== "") {
       const barnRes = await pool.query("SELECT * FROM barns WHERE id = $1", [
         barn_id,
       ]);
@@ -129,29 +126,7 @@ exports.chatWithAssistant = async (req, res) => {
               `- Kadar Amonia: ${latest.gas_ppm} PPM.`;
           }
         }
-
-        // Keuangan
-        const finRes = await pool.query(
-          `SELECT category, SUM(amount) AS total
-           FROM barn_finances
-           WHERE barn_id = $1
-             AND EXTRACT(MONTH FROM recorded_at) = EXTRACT(MONTH FROM NOW())
-           GROUP BY category`,
-          [barn_id],
-        );
-        if (finRes.rows.length > 0) {
-          const items = finRes.rows
-            .map(
-              (r) =>
-                `- ${r.category}: Rp ${Number(r.total).toLocaleString("id-ID")}`,
-            )
-            .join("\n");
-          const total = finRes.rows.reduce((s, r) => s + Number(r.total), 0);
-          financeContext = `\nKeuangan Kandang (bulan ini):\n${items}\n- Total: Rp ${total.toLocaleString("id-ID")}`;
-        }
       }
-
-      // ── Context: user_id (semua kandang) ───────────────────
     } else if (user_id) {
       const devicesRes = await pool.query(
         `SELECT d.device_id, d.device_name, b.barn_name
@@ -176,17 +151,23 @@ exports.chatWithAssistant = async (req, res) => {
             allData.push(
               `- Kandang ${dev.barn_name || dev.device_name}: Suhu ${d.temperature}°C, Lembab ${d.humidity}%, Amonia ${d.gas_ppm} PPM`,
             );
-          } else {
-            allData.push(
-              `- Kandang ${dev.barn_name || dev.device_name}: Belum ada data.`,
-            );
           }
         }
-        sensorContext = "Rangkuman Data Semua Kandang:\n" + allData.join("\n");
+        if (allData.length > 0) {
+          sensorContext =
+            "Rangkuman Data Semua Kandang:\n" + allData.join("\n");
+        }
       }
     }
+  } catch (dbErr) {
+    console.warn(
+      "Peringatan: Gagal memuat database context, lanjut memanggil Groq:",
+      dbErr.message,
+    );
+  }
 
-    // ── Build prompt ──────────────────────────────────────
+  // 2. Eksekusi Request ke Groq
+  try {
     const prompt = `
 PERAN ANDA:
 Nama Anda adalah "Prof. Jago", asisten AI IoTernak yang cerdas dan ramah.
@@ -232,12 +213,12 @@ Silakan jawab sebagai Prof. Jago:
       .replace(/\[/g, "")
       .replace(/\]/g, "");
 
-    res.json({ status: "success", reply: cleanText.trim() });
+    return res.json({ status: "success", reply: cleanText.trim() });
   } catch (error) {
     console.error("AI Error:", error);
-    res.status(500).json({
+    return res.status(500).json({
       status: "error",
-      message: "Prof. Jago sedang gangguan sesaat. Coba lagi nanti ya.",
+      message: error.message || "Prof. Jago sedang gangguan sesaat.",
     });
   }
 };
