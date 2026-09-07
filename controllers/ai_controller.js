@@ -197,7 +197,7 @@ Silakan jawab sebagai Prof. Jago:
 
     const chatCompletion = await groq.chat.completions.create({
       messages: [{ role: "user", content: prompt }],
-      model: "llama-3.1-8b-instant",
+      model: "openai/gpt-oss-20b",
       temperature: 0.7,
       max_tokens: 1024,
     });
