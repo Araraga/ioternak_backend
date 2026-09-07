@@ -1101,6 +1101,123 @@ app.get("/api/my-subscription", async (req, res) => {
 });
 
 // ============================================================
+// DEVICE PORTION CONFIG - Set rotation config per device
+// ============================================================
+
+app.put("/api/devices/:deviceId/portion-config", async (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    const { sedikit, sedang, banyak } = req.body;
+
+    // Validate input
+    if (!sedikit || !sedang || !banyak) {
+      return res.status(400).json({
+        status: "error",
+        message: "sedikit, sedang, dan banyak harus diisi",
+      });
+    }
+
+    if (sedikit <= 0 || sedang <= 0 || banyak <= 0) {
+      return res.status(400).json({
+        status: "error",
+        message: "Nilai rotasi harus lebih dari 0",
+      });
+    }
+
+    // Check if device exists
+    const deviceCheck = await pool.query(
+      "SELECT device_id FROM devices WHERE device_id = $1",
+      [deviceId]
+    );
+
+    if (deviceCheck.rows.length === 0) {
+      return res.status(404).json({
+        status: "error",
+        message: "Device tidak ditemukan",
+      });
+    }
+
+    // Save config to database
+    await pool.query(
+      `INSERT INTO device_portion_config (device_id, sedikit, sedang, banyak, updated_at)
+       VALUES ($1, $2, $3, $4, NOW())
+       ON CONFLICT (device_id) 
+       DO UPDATE SET 
+         sedikit = $2, 
+         sedang = $3, 
+         banyak = $4, 
+         updated_at = NOW()`,
+      [deviceId, sedikit, sedang, banyak]
+    );
+
+    // Publish config to MQTT
+    const configPayload = JSON.stringify({
+      sedikit: parseInt(sedikit),
+      sedang: parseInt(sedang),
+      banyak: parseInt(banyak),
+    });
+
+    const topic = `iopakan/${deviceId}/config/rotations`;
+    mqttClient.publish(topic, configPayload, { qos: 1, retain: true }, (err) => {
+      if (err) {
+        console.error(`❌ Gagal publish config ke ${topic}:`, err);
+      } else {
+        console.log(`✅ Config published ke ${topic}:`, configPayload);
+      }
+    });
+
+    res.json({
+      status: "success",
+      message: "Konfigurasi rotasi berhasil disimpan",
+      data: { deviceId, sedikit, sedang, banyak },
+    });
+  } catch (err) {
+    console.error("Error setting portion config:", err);
+    res.status(500).json({ status: "error", message: "Server error" });
+  }
+});
+
+// Get current portion config for a device
+app.get("/api/devices/:deviceId/portion-config", async (req, res) => {
+  try {
+    const { deviceId } = req.params;
+
+    const result = await pool.query(
+      `SELECT sedikit, sedang, banyak, updated_at 
+       FROM device_portion_config 
+       WHERE device_id = $1`,
+      [deviceId]
+    );
+
+    if (result.rows.length === 0) {
+      // Return default values if not configured
+      return res.json({
+        status: "success",
+        data: {
+          deviceId,
+          sedikit: 3,
+          sedang: 6,
+          banyak: 10,
+          isDefault: true,
+        },
+      });
+    }
+
+    res.json({
+      status: "success",
+      data: {
+        deviceId,
+        ...result.rows[0],
+        isDefault: false,
+      },
+    });
+  } catch (err) {
+    console.error("Error getting portion config:", err);
+    res.status(500).json({ status: "error", message: "Server error" });
+  }
+});
+
+// ============================================================
 // AI CHAT
 // ============================================================
 
