@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS health_checks (
   behavioral_notes TEXT,
   environmental_issues TEXT,
   actions_taken TEXT,
-  checked_by INTEGER REFERENCES users(id),
+  checked_by INTEGER REFERENCES users(user_id) ON DELETE SET NULL,
   created_at TIMESTAMP DEFAULT NOW()
 );
 

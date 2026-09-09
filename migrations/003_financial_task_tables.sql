@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS income_records (
   total_amount DECIMAL(14,2) CHECK (total_amount >= 0),
   buyer_name VARCHAR(100),
   notes TEXT,
-  created_by INTEGER REFERENCES users(id),
+  created_by INTEGER REFERENCES users(user_id) ON DELETE SET NULL,
   created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS expense_records (
   supplier VARCHAR(100),
   notes TEXT,
   receipt_url VARCHAR(255),
-  created_by INTEGER REFERENCES users(id),
+  created_by INTEGER REFERENCES users(user_id) ON DELETE SET NULL,
   created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -50,10 +50,10 @@ CREATE TABLE IF NOT EXISTS tasks (
   status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed', 'cancelled')),
   due_date DATE NOT NULL,
   due_time TIME,
-  assigned_to INTEGER REFERENCES users(id),
-  created_by INTEGER REFERENCES users(id),
+  assigned_to INTEGER REFERENCES users(user_id) ON DELETE SET NULL,
+  created_by INTEGER REFERENCES users(user_id) ON DELETE SET NULL,
   completed_at TIMESTAMP,
-  completed_by INTEGER REFERENCES users(id),
+  completed_by INTEGER REFERENCES users(user_id) ON DELETE SET NULL,
   completion_notes TEXT,
   time_spent_minutes INTEGER,
   is_recurring BOOLEAN DEFAULT false,
@@ -113,6 +113,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_task_updated_at ON tasks;
 CREATE TRIGGER trg_task_updated_at
 BEFORE UPDATE ON tasks
 FOR EACH ROW

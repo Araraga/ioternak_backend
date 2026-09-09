@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS bird_batches (
   actual_harvest_date DATE,
   status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active', 'completed', 'terminated')),
   notes TEXT,
-  created_by INTEGER REFERENCES users(id),
+  created_by INTEGER REFERENCES users(user_id) ON DELETE SET NULL,
   created_at TIMESTAMP DEFAULT NOW(),
   updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS population_logs (
   culling_reason VARCHAR(100),
   sold_count INTEGER DEFAULT 0 CHECK (sold_count >= 0),
   notes TEXT,
-  logged_by INTEGER REFERENCES users(id),
+  logged_by INTEGER REFERENCES users(user_id) ON DELETE SET NULL,
   created_at TIMESTAMP DEFAULT NOW(),
   UNIQUE(batch_id, log_date)
 );
@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS production_logs (
   fcr DECIMAL(5,2),
   production_rate DECIMAL(5,2),
   notes TEXT,
-  logged_by INTEGER REFERENCES users(id),
+  logged_by INTEGER REFERENCES users(user_id) ON DELETE SET NULL,
   created_at TIMESTAMP DEFAULT NOW(),
   UNIQUE(batch_id, log_date)
 );

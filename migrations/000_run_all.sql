@@ -11,6 +11,8 @@
 CREATE OR REPLACE VIEW batch_summary AS
 SELECT 
   b.id,
+  b.barn_id,
+  barn.owner_id,
   b.batch_name,
   b.batch_code,
   b.bird_type,
