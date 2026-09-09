@@ -1,5 +1,37 @@
 const pool = require('../config/db');
 
+const categoryMap = {
+  pakan: 'feeding',
+  kesehatan: 'health',
+  sanitasi: 'cleaning',
+  pembersihan: 'cleaning',
+  kebersihan: 'cleaning',
+  biosecurity: 'health',
+  listrik_alat: 'maintenance',
+  pemeliharaan: 'maintenance',
+  vaksinasi: 'vaccination',
+  produksi: 'production',
+  lainnya: 'other',
+  feeding: 'feeding',
+  health: 'health',
+  cleaning: 'cleaning',
+  maintenance: 'maintenance',
+  vaccination: 'vaccination',
+  production: 'production',
+  other: 'other'
+};
+
+const priorityMap = {
+  rendah: 'low',
+  sedang: 'medium',
+  tinggi: 'high',
+  darurat: 'urgent',
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  urgent: 'urgent'
+};
+
 exports.createTask = async (req, res) => {
   try {
     const {
@@ -21,11 +53,14 @@ exports.createTask = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Title and due_date are required' });
     }
 
+    const safeCategory = category ? (categoryMap[category.toLowerCase()] || 'other') : 'other';
+    const safePriority = priority ? (priorityMap[priority.toLowerCase()] || 'medium') : 'medium';
+
     const result = await pool.query(
       `INSERT INTO tasks 
        (barn_id, batch_id, title, description, category, priority, due_date, due_time, assigned_to, created_by, is_recurring, recurring_pattern)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
-      [barn_id, batch_id, title, description, category, priority || 'medium', due_date, due_time, assigned_to, user_id, is_recurring || false, recurring_pattern]
+      [barn_id, batch_id, title, description, safeCategory, safePriority, due_date, due_time || null, assigned_to, user_id, is_recurring || false, recurring_pattern || null]
     );
 
     res.status(201).json({ success: true, message: 'Task created', data: result.rows[0] });
@@ -77,7 +112,9 @@ exports.getTasks = async (req, res) => {
 exports.updateTask = async (req, res) => {
   try {
     const { id } = req.params;
-    const updates = req.body;
+    const updates = { ...req.body };
+    if (updates.category) updates.category = categoryMap[updates.category.toLowerCase()] || updates.category;
+    if (updates.priority) updates.priority = priorityMap[updates.priority.toLowerCase()] || updates.priority;
     const fields = [];
     const values = [];
     let paramCount = 1;

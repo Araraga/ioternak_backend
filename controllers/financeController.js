@@ -114,10 +114,14 @@ exports.getBatchProfitability = async (req, res) => {
 exports.getIncome = async (req, res) => {
   try {
     const { barn_id } = req.query;
-    const result = await pool.query(
-      'SELECT * FROM income_records WHERE barn_id = $1 ORDER BY income_date DESC LIMIT 50',
-      [barn_id]
-    );
+    let query = 'SELECT * FROM income_records';
+    const params = [];
+    if (barn_id) {
+      query += ' WHERE barn_id = $1';
+      params.push(barn_id);
+    }
+    query += ' ORDER BY income_date DESC LIMIT 50';
+    const result = await pool.query(query, params);
     res.json({ success: true, data: result.rows });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -127,10 +131,14 @@ exports.getIncome = async (req, res) => {
 exports.getExpenses = async (req, res) => {
   try {
     const { barn_id } = req.query;
-    const result = await pool.query(
-      'SELECT * FROM expense_records WHERE barn_id = $1 ORDER BY expense_date DESC LIMIT 50',
-      [barn_id]
-    );
+    let query = 'SELECT * FROM expense_records';
+    const params = [];
+    if (barn_id) {
+      query += ' WHERE barn_id = $1';
+      params.push(barn_id);
+    }
+    query += ' ORDER BY expense_date DESC LIMIT 50';
+    const result = await pool.query(query, params);
     res.json({ success: true, data: result.rows });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
