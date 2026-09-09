@@ -7,6 +7,11 @@ const path = require("path");
 const pool = require("./config/db");
 const aiController = require("./controllers/ai_controller");
 const authRoutes = require("./routes/authRoutes");
+const batchRoutes = require("./routes/batchRoutes");
+const productionRoutes = require("./routes/productionRoutes");
+const healthRoutes = require("./routes/healthRoutes");
+const financeRoutes = require("./routes/financeRoutes");
+const taskRoutes = require("./routes/taskRoutes");
 const {
   formatPhoneNumber,
   sendWhatsappOTP,
@@ -14,11 +19,22 @@ const {
   getWhatsappClient,
 } = require("./utils/whatsapp");
 
+
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// ============================================================
+// ROUTES
+// ============================================================
+app.use("/auth", authRoutes);
+app.use("/api", batchRoutes);
+app.use("/api", productionRoutes);
+app.use("/api", healthRoutes);
+app.use("/api", financeRoutes);
+app.use("/api", taskRoutes);
 
 // ============================================================
 // WHATSAPP INIT dengan AUTO-RECONNECT
@@ -222,7 +238,7 @@ app.get("/api/firmware/check", (req, res) => {
 app.get("/", (req, res) => res.send("🚀 Backend IoTernak Running!"));
 
 // Auth
-app.use("/auth", authRoutes);
+
 
 app.post("/api/login", async (req, res) => {
   try {
@@ -648,9 +664,13 @@ app.get("/api/barns", async (req, res) => {
         .json({ status: "error", message: "User ID diperlukan" });
 
     const result = await pool.query(
-      `SELECT b.*, COUNT(d.device_id) AS device_count
+      `SELECT b.*, 
+              COUNT(DISTINCT d.device_id) AS device_count,
+              COUNT(DISTINCT CASE WHEN bb.status = 'active' THEN bb.id END) AS active_batches_count,
+              COALESCE(SUM(CASE WHEN bb.status = 'active' THEN bb.current_count ELSE 0 END), 0)::INT AS active_birds_count
        FROM barns b
        LEFT JOIN devices d ON d.barn_id = b.id
+       LEFT JOIN bird_batches bb ON bb.barn_id = b.id
        WHERE b.owner_id = $1
        GROUP BY b.id
        ORDER BY b.barn_name ASC`,
@@ -660,6 +680,90 @@ app.get("/api/barns", async (req, res) => {
     res.json({ status: "success", data: result.rows });
   } catch (err) {
     console.error("Barns Error:", err);
+    res.status(500).json({ error: "Server Error" });
+  }
+});
+
+// Farm Dashboard Summary for user
+app.get("/api/barns-dashboard", async (req, res) => {
+  try {
+    const { user_id } = req.query;
+    if (!user_id) {
+      return res.status(400).json({ status: "error", message: "User ID diperlukan" });
+    }
+
+    const barnsRes = await pool.query(
+      `SELECT 
+         b.*, 
+         COUNT(DISTINCT d.device_id) AS device_count,
+         COUNT(DISTINCT CASE WHEN bb.status = 'active' THEN bb.id END) AS active_batches_count,
+         COALESCE(SUM(CASE WHEN bb.status = 'active' THEN bb.current_count ELSE 0 END), 0)::INT AS active_birds_count,
+         COALESCE(SUM(CASE WHEN bb.status = 'active' THEN bb.initial_count ELSE 0 END), 0)::INT AS initial_birds_count
+       FROM barns b
+       LEFT JOIN devices d ON d.barn_id = b.id
+       LEFT JOIN bird_batches bb ON bb.barn_id = b.id
+       WHERE b.owner_id = $1
+       GROUP BY b.id
+       ORDER BY b.barn_name ASC`,
+      [user_id]
+    );
+
+    const barns = barnsRes.rows;
+    const totalBarns = barns.length;
+    const totalCapacity = barns.reduce((sum, b) => sum + (parseInt(b.capacity) || 0), 0);
+    const totalActiveBirds = barns.reduce((sum, b) => sum + (parseInt(b.active_birds_count) || 0), 0);
+    const totalInitialBirds = barns.reduce((sum, b) => sum + (parseInt(b.initial_birds_count) || 0), 0);
+    const totalBatches = barns.reduce((sum, b) => sum + (parseInt(b.active_batches_count) || 0), 0);
+
+    const mortalityRate = totalInitialBirds > 0 
+      ? Number((((totalInitialBirds - totalActiveBirds) / totalInitialBirds) * 100).toFixed(1))
+      : 0.0;
+
+    let pendingTasksCount = 0;
+    try {
+      const taskRes = await pool.query(
+        `SELECT COUNT(*) AS pending_count
+         FROM daily_tasks dt
+         JOIN barns b ON b.id = dt.barn_id
+         WHERE b.owner_id = $1 AND dt.status = 'pending' AND (dt.due_date IS NULL OR dt.due_date <= CURRENT_DATE)`,
+        [user_id]
+      );
+      pendingTasksCount = parseInt(taskRes.rows[0]?.pending_count || 0);
+    } catch (_) {}
+
+    let netProfitThisMonth = 0;
+    try {
+      const finRes = await pool.query(
+        `SELECT 
+           COALESCE(SUM(CASE WHEN transaction_type = 'income' THEN amount ELSE -amount END), 0) AS net_profit
+         FROM (
+           SELECT amount, 'expense' as transaction_type FROM barn_finances bf JOIN barns b ON b.id = bf.barn_id WHERE b.owner_id = $1 AND EXTRACT(MONTH FROM recorded_at) = EXTRACT(MONTH FROM NOW()) AND EXTRACT(YEAR FROM recorded_at) = EXTRACT(YEAR FROM NOW())
+           UNION ALL
+           SELECT total_amount as amount, 'income' as transaction_type FROM farm_income fi JOIN barns b ON b.id = fi.barn_id WHERE b.owner_id = $1 AND EXTRACT(MONTH FROM income_date) = EXTRACT(MONTH FROM NOW()) AND EXTRACT(YEAR FROM income_date) = EXTRACT(YEAR FROM NOW())
+         ) combined`,
+        [user_id]
+      );
+      netProfitThisMonth = Number(finRes.rows[0]?.net_profit || 0);
+    } catch (_) {}
+
+    res.json({
+      status: "success",
+      data: {
+        summary: {
+          total_barns: totalBarns,
+          total_capacity: totalCapacity,
+          total_active_birds: totalActiveBirds,
+          total_batches: totalBatches,
+          mortality_rate: mortalityRate,
+          occupancy_rate: totalCapacity > 0 ? Number(((totalActiveBirds / totalCapacity) * 100).toFixed(1)) : 0,
+          pending_tasks_today: pendingTasksCount,
+          net_profit_this_month: netProfitThisMonth,
+        },
+        barns
+      }
+    });
+  } catch (err) {
+    console.error("Barns Dashboard Error:", err);
     res.status(500).json({ error: "Server Error" });
   }
 });
@@ -753,6 +857,8 @@ app.post("/api/barn", async (req, res) => {
       barn_name,
       owner_id,
       location,
+      latitude,
+      longitude,
       animal_type,
       capacity,
       description,
@@ -765,15 +871,17 @@ app.post("/api/barn", async (req, res) => {
 
     const result = await pool.query(
       `INSERT INTO barns
-         (barn_name, owner_id, location, animal_type, capacity, description,
+         (barn_name, owner_id, location, latitude, longitude, animal_type, capacity, description,
           preferred_temp_min, preferred_temp_max, preferred_humidity_min,
           preferred_humidity_max, preferred_gas_max)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        RETURNING *`,
       [
         barn_name,
         owner_id,
         location,
+        latitude || null,
+        longitude || null,
         animal_type,
         capacity,
         description,
@@ -800,6 +908,8 @@ app.put("/api/barn/:barn_id", async (req, res) => {
     const ALLOWED_KEYS = [
       "barn_name",
       "location",
+      "latitude",
+      "longitude",
       "animal_type",
       "capacity",
       "description",
