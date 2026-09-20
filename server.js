@@ -443,9 +443,9 @@ app.get("/api/sensor-data", async (req, res) => {
 // ============================================================
 
 function portionToRotations(portion) {
-  if (portion === "sedikit") return 3;
-  if (portion === "banyak") return 10;
-  return 6; // sedang (default)
+  if (portion === "sedikit" || portion === "kecil") return 1;
+  if (portion === "banyak" || portion === "besar") return 4;
+  return 2; // sedang (default)
 }
 
 function normaliseTimes(rawTimes) {
@@ -1217,13 +1217,15 @@ app.get("/api/my-subscription", async (req, res) => {
 app.put("/api/devices/:deviceId/portion-config", async (req, res) => {
   try {
     const { deviceId } = req.params;
-    const { sedikit, sedang, banyak } = req.body;
+    const sedikit = req.body.sedikit ?? req.body.kecil;
+    const sedang  = req.body.sedang;
+    const banyak  = req.body.banyak ?? req.body.besar;
 
     // Validate input
-    if (!sedikit || !sedang || !banyak) {
+    if (sedikit === undefined || sedang === undefined || banyak === undefined) {
       return res.status(400).json({
         status: "error",
-        message: "sedikit, sedang, dan banyak harus diisi",
+        message: "sedikit (atau kecil), sedang, dan banyak (atau besar) harus diisi",
       });
     }
 
@@ -1305,9 +1307,9 @@ app.get("/api/devices/:deviceId/portion-config", async (req, res) => {
         status: "success",
         data: {
           deviceId,
-          sedikit: 3,
-          sedang: 6,
-          banyak: 10,
+          sedikit: 1,
+          sedang: 2,
+          banyak: 4,
           isDefault: true,
         },
       });
