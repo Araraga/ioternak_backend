@@ -87,6 +87,11 @@ async function safeWhatsappSend(phone, message) {
   }
 }
 
+// Pastikan kolom last_seen ada pada tabel devices
+pool.query(
+  "ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_seen TIMESTAMP DEFAULT NOW();",
+).catch((e) => console.warn("Notice last_seen column:", e.message));
+
 // ============================================================
 // MQTT BROKER SETUP
 // ============================================================
@@ -101,10 +106,18 @@ const mqttClient = mqtt.connect(process.env.MQTT_BROKER_URL, {
 
 mqttClient.on("connect", () => {
   console.log("✅ Terhubung ke HiveMQ Broker!");
-  mqttClient.subscribe(["devices/+/data", "devices/+/register"], (err) => {
-    if (err) console.error("❌ Gagal subscribe MQTT:", err);
-    else console.log("📡 Listening: Data & Register...");
-  });
+  mqttClient.subscribe(
+    [
+      "devices/+/data",
+      "devices/+/register",
+      "devices/+/heartbeat",
+      "devices/+/status",
+    ],
+    (err) => {
+      if (err) console.error("❌ Gagal subscribe MQTT:", err);
+      else console.log("📡 Listening: Data, Register, & Heartbeat...");
+    },
+  );
 });
 
 mqttClient.on("message", async (topic, message) => {
@@ -113,15 +126,30 @@ mqttClient.on("message", async (topic, message) => {
     const deviceId = topicParts[1];
     const action = topicParts[2];
 
+    // Sentuh last_seen perangkat setiap kali ada paket apapun dari device tersebut
+    if (deviceId) {
+      pool
+        .query("UPDATE devices SET last_seen = NOW() WHERE device_id = $1", [
+          deviceId,
+        ])
+        .catch(() => {});
+    }
+
+    // ── HEARTBEAT / STATUS ─────────────────────────────────
+    if (action === "heartbeat" || action === "status") {
+      console.log(`[HEARTBEAT] ${deviceId} aktif via MQTT`);
+      return;
+    }
+
     // ── REGISTER ──────────────────────────────────────────
     if (action === "register") {
       const info = JSON.parse(message.toString());
-      console.log(`[REGISTER] Perangkat baru: ${deviceId}`);
+      console.log(`[REGISTER] Perangkat aktif/baru: ${deviceId}`);
 
       await pool.query(
-        `INSERT INTO devices (device_id, device_name, type, whatsapp_number)
-         VALUES ($1, $2, $3, '')
-         ON CONFLICT (device_id) DO NOTHING`,
+        `INSERT INTO devices (device_id, device_name, type, whatsapp_number, last_seen)
+         VALUES ($1, $2, $3, '', NOW())
+         ON CONFLICT (device_id) DO UPDATE SET last_seen = NOW()`,
         [deviceId, info.device_name || deviceId, info.type || "unknown"],
       );
       return;
@@ -309,9 +337,9 @@ app.get("/api/check-device", async (req, res) => {
   }
 });
 
-// ── DEVICE STATUS (online/offline berdasarkan sensor_data terbaru) ──────────
+// ── DEVICE STATUS (online/offline berdasarkan last_seen & sensor_data terbaru) ──────────
 // GET /api/device-status?ids=deviceId1,deviceId2,...
-// Device dianggap ONLINE jika mengirim data dalam 5 menit terakhir.
+// Device dianggap ONLINE jika aktif (last_seen atau sensor) dalam 10 menit terakhir.
 app.get("/api/device-status", async (req, res) => {
   try {
     const { ids } = req.query;
@@ -324,16 +352,19 @@ app.get("/api/device-status", async (req, res) => {
     if (deviceIds.length === 0)
       return res.json({ status: "success", data: {} });
 
-    // Ambil timestamp data terakhir untuk setiap device
+    // Ambil timestamp data terakhir untuk setiap device (baik dari tabel devices maupun sensor_data)
     const result = await pool.query(
-      `SELECT device_id, MAX(timestamp) AS last_seen
-       FROM sensor_data
-       WHERE device_id = ANY($1)
-       GROUP BY device_id`,
+      `SELECT d.device_id, d.type,
+              GREATEST(
+                d.last_seen,
+                (SELECT MAX(timestamp) FROM sensor_data s WHERE s.device_id = d.device_id)
+              ) AS last_seen
+       FROM devices d
+       WHERE d.device_id = ANY($1)`,
       [deviceIds],
     );
 
-    const ONLINE_THRESHOLD_MINUTES = 5;
+    const ONLINE_THRESHOLD_MINUTES = 10;
     const statusMap = {};
 
     // Default semua offline
@@ -341,10 +372,12 @@ app.get("/api/device-status", async (req, res) => {
 
     // Set online jika last_seen dalam threshold
     result.rows.forEach((row) => {
-      const lastSeen = new Date(row.last_seen);
-      const diffMs = Date.now() - lastSeen.getTime();
-      const diffMinutes = diffMs / 1000 / 60;
-      statusMap[row.device_id] = diffMinutes <= ONLINE_THRESHOLD_MINUTES;
+      if (row.last_seen) {
+        const lastSeen = new Date(row.last_seen);
+        const diffMs = Date.now() - lastSeen.getTime();
+        const diffMinutes = diffMs / 1000 / 60;
+        statusMap[row.device_id] = diffMinutes <= ONLINE_THRESHOLD_MINUTES;
+      }
     });
 
     res.json({ status: "success", data: statusMap });
@@ -737,9 +770,26 @@ app.get("/api/barns-dashboard", async (req, res) => {
         `SELECT 
            COALESCE(SUM(CASE WHEN transaction_type = 'income' THEN amount ELSE -amount END), 0) AS net_profit
          FROM (
-           SELECT amount, 'expense' as transaction_type FROM barn_finances bf JOIN barns b ON b.id = bf.barn_id WHERE b.owner_id = $1 AND EXTRACT(MONTH FROM recorded_at) = EXTRACT(MONTH FROM NOW()) AND EXTRACT(YEAR FROM recorded_at) = EXTRACT(YEAR FROM NOW())
+           SELECT total_amount AS amount, 'expense' AS transaction_type 
+           FROM expense_records er 
+           JOIN barns b ON b.id = er.barn_id 
+           WHERE b.owner_id = $1 
+             AND EXTRACT(MONTH FROM er.expense_date) = EXTRACT(MONTH FROM NOW()) 
+             AND EXTRACT(YEAR FROM er.expense_date) = EXTRACT(YEAR FROM NOW())
            UNION ALL
-           SELECT total_amount as amount, 'income' as transaction_type FROM farm_income fi JOIN barns b ON b.id = fi.barn_id WHERE b.owner_id = $1 AND EXTRACT(MONTH FROM income_date) = EXTRACT(MONTH FROM NOW()) AND EXTRACT(YEAR FROM income_date) = EXTRACT(YEAR FROM NOW())
+           SELECT total_amount AS amount, 'income' AS transaction_type 
+           FROM income_records ir 
+           JOIN barns b ON b.id = ir.barn_id 
+           WHERE b.owner_id = $1 
+             AND EXTRACT(MONTH FROM ir.income_date) = EXTRACT(MONTH FROM NOW()) 
+             AND EXTRACT(YEAR FROM ir.income_date) = EXTRACT(YEAR FROM NOW())
+           UNION ALL
+           SELECT amount, 'expense' AS transaction_type 
+           FROM barn_finances bf 
+           JOIN barns b ON b.id = bf.barn_id 
+           WHERE b.owner_id = $1 
+             AND EXTRACT(MONTH FROM bf.recorded_at) = EXTRACT(MONTH FROM NOW()) 
+             AND EXTRACT(YEAR FROM bf.recorded_at) = EXTRACT(YEAR FROM NOW())
          ) combined`,
         [user_id]
       );
