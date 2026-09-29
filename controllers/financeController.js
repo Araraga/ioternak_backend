@@ -79,7 +79,7 @@ exports.addIncome = async (req, res) => {
 
 exports.addExpense = async (req, res) => {
   try {
-    const { barn_id, batch_id, expense_date, expense_category, item_name, quantity, unit_price, total_amount, supplier, notes } = req.body;
+    const { barn_id, batch_id, expense_date, expense_category, item_name, quantity, unit_price, total_amount, supplier, notes, receipt_url } = req.body;
     const user_id = req.user?.id || req.body.user_id;
 
     // Normalisasi kategori ke DB CHECK constraint
