@@ -33,6 +33,7 @@ app.use("/auth", authRoutes);
 app.use("/api", batchRoutes);
 app.use("/api", productionRoutes);
 app.use("/api", healthRoutes);
+app.use("/api/finance", financeRoutes);
 app.use("/api", financeRoutes);
 app.use("/api", taskRoutes);
 
